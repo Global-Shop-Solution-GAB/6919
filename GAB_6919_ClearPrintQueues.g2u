@@ -1,0 +1,145 @@
+﻿Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+' <Monday night football theme begins to play...>
+'Useful for SENTINEL\CODESOFT environments where somebody accidently sents one kajillion metric asstons 
+'of label prints to a label printer accidentially and needs to clear the print queue thereby preventing
+'the needless death of a bajillion trees...
+' *busts a move* <insert dancing gif here>
+
+'31970-31971 - 	Wirepoll Custom 1 & 2, respectively
+'39001-39020 - 	GS Mobile Custom Transaction Hooks
+'31900 - 		WIR200 Entry
+'31908-31983 - 	Special Purpose Transaction Specific Hooks
+'31999 - 		WIR200 Exit
+
+'Declaration...
+V.Local..BulkDeclareString(sFolder,sFiles,sCurrentFile,sStatusMsg,sSQL,sNextTransID,sTXID)
+V.Local..BulkDeclareLong(i,ii)
+V.Local..BulkDeclareBoolean(bExists)
+
+'Initialization...
+V.Local.sFolder.Set("C:\Windows\System32\spool\PRINTERS\")
+
+'+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+'Just looking for more information about these other hooks...
+'F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+'	F.Intrinsic.Control.CaseAny(31970,31971,31900,31999)
+'		'Inspecting these hooks...  stop everything.
+'		Function.Intrinsic.Debug.InvokeDebugger
+'		Function.Intrinsic.Debug.Stop
+'		F.Intrinsic.UI.Msgbox("Fartlek")
+'	F.Intrinsic.Control.CaseElse
+'		'Do nothing...  let program run as intended.
+'		F.Intrinsic.Control.EndSelect
+'F.Intrinsic.Control.EndSelect
+
+'+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+'Called from GS Menu...
+'Because this has to be run ON THE SERVER (since that's where the printers are installed, the jobs are 
+'created, etc), we are going to create a Wireless Transaction, wait for WIREPOLL to process it, and then 
+'retrieve the result from the MOBILE_CUSTOM_RESULT table and bubble that back up to the users menu session.
+F.Intrinsic.Control.If(V.Caller.USER,<>,"WIRE")
+	F.ODBC.Connection!con.OpenCompanyConnection
+	F.ODBC.Connection!conc.OpenCommonConnection
+	
+	'User feedback...
+	F.Intrinsic.UI.InvokeWaitDialog("Cancelling all queued label print jobs...")
+	
+	'Get TXID proper recordkeeping stuff in the WIRELESS_HDR/LINES tables... and so Wirepoll does what it's supposed to do.
+	F.ODBC.Connection!conc.ExecuteAndReturn("select TOP 1 RIGHT(CONCAT('00',TXID),2) from MOBILE_CUSTOM_TRANS where TNAME='Cancel All Queued Label Print Jobs'",V.Local.sTXID)
+	
+	'Since WIREPOLL actually needs to handle this, we're just faking some transactions into the WIRELESS tables. #uglystyle
+	F.ODBC.Connection!con.ExecuteAndReturn("select top 1 RIGHT(CONCAT('000000000',CAST(TRANS_ID AS INTEGER)+1),9) NEXTTRANSID from WIRELESS_HDR order by TRANS_ID DESC",V.Local.sNextTransID)
+	F.Intrinsic.String.Build("insert into WIRELESS_LINE (TRANS_ID,SEQ,TRANS_TYPE) values ('{0}','0000','C{1}')",V.Local.sNextTransID,V.Local.sTXID,V.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+	F.Intrinsic.String.Build("insert into WIRELESS_HDR (TRANS_ID,TRANS_TYPE) values ('{0}','C{1}')",V.Local.sNextTransID,V.Local.sTXID,V.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+	
+	'Retrieve and display the results...  because user feedback
+	'This loop polls for the result before moving on.
+	F.Intrinsic.Control.DoUntil(V.Local.sStatusMsg.Trim,<>,"")
+		F.Intrinsic.Math.Add(V.Local.ii,1,V.Local.ii)
+		F.Intrinsic.String.Build("select TOP 1 LTRIM(RTRIM(RESULTS)) from MOBILE_CUSTOM_RESULT where COCODE='{0}' and TXID='{1}'",V.Caller.CompanyCode,V.Local.sNextTransID,V.Local.sSQL)
+		F.ODBC.Connection!conc.ExecuteAndReturn(V.Local.sSQL,V.Local.sStatusMsg)
+	F.Intrinsic.Control.Loop
+	
+	'We close things when we're done with them because we weren't born in a barn...
+	F.ODBC.Connection!con.Close
+	F.ODBC.Connection!conc.Close
+	
+	'No more user feedback...
+	F.Intrinsic.UI.CloseWaitDialog
+	
+	'j/k alittle more user feedback...
+	F.Intrinsic.UI.Msgbox(V.Local.sStatusMsg,"Label Queues Cleared...")
+	
+	'Buh-bye!
+	F.Intrinsic.Control.End
+	
+	'This is how you fake it 'til you make it KEKEKEKEKEKEKEKEKEKEK
+F.Intrinsic.Control.EndIf
+
+'+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+'Silent mode...  sneaky sneaky
+F.Intrinsic.UI.SuppressOutput(True)
+
+'If we got here...  this is coming from WIREPOLL. Time to do work... NOW WE MAKE IT
+F.Intrinsic.File.GetFileList(V.Local.sFolder,"",V.Local.sFiles)
+F.Intrinsic.String.Split(V.Local.sFiles,":",V.Local.sFiles)
+
+'Opening Common DB so we can write a result (aka User Feedback) to the MOBILE_CUSTOM_RESULT table.
+F.ODBC.Connection!conc.OpenCommonConnection
+
+'FILES FOUND IN THE SPOOL FOLDER! We gonna mess some stuff up...
+F.Intrinsic.Control.If(V.Local.sFiles.UBound,>,0)
+	'Stop the spooler service.  Just makes sure we don't have any files tied up in a process.
+	F.Intrinsic.Task.ShellExecSync(0,"open","net.exe","stop spooler","",0)
+	
+	'Delete all queued print jobs...
+	F.Intrinsic.Control.For(V.Local.i,0,V.Local.sFiles.UBound,1)
+		F.Intrinsic.String.Build("{0}\{1}",V.Local.sFolder,V.Local.sFiles(V.Local.i),V.Local.sCurrentFile)
+		F.Intrinsic.File.Exists(V.Local.sCurrentFile,V.Local.bExists)
+		F.Intrinsic.Control.If(V.Local.bExists)
+			F.Intrinsic.Control.Try
+				F.Intrinsic.File.DeleteFile(V.Local.sCurrentFile)
+			F.Intrinsic.Control.Catch
+				'Just in case, for some reason, deleting this file fails...  don't allow the program to puke.
+				'Basically just ignore the error, move on, keep deleting files.
+			F.Intrinsic.Control.EndTry
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.i)
+	
+	'Print Queue emptied...  Start the spooler service...
+	F.Intrinsic.Control.If(V.Local.sFiles.UBound,>,0)
+		F.Intrinsic.Task.ShellExecSync(0,"open","net.exe","start spooler","",0)
+	F.Intrinsic.Control.EndIf
+	
+	'Every print job is comprised of 2 files... a SHD (spooler header) and SPL (spooler document/print job).
+	'Since we know that every job will have 2 files, no questions asked, just divide number of files deleted by 2...
+	'in order to let the user know how many print jobs were cancelled out of the queue.  So satisfying...
+	'Because...  you guessed it...  user feedback.
+	F.Intrinsic.Math.Div(V.Local.i,2,V.Local.i)
+	F.Intrinsic.Math.Round(V.Local.i,0,V.Local.i)
+	F.Intrinsic.String.Build("{0} queued labels deleted from the queue.",V.Local.i,V.Local.sStatusMsg)
+
+'No files found...  boring.  But should still tell the user something.
+F.Intrinsic.Control.Else
+	V.Local.sStatusMsg.Set("No queued labels found in printer queues.")
+	
+F.Intrinsic.Control.EndIf
+
+'Write status message...
+F.Intrinsic.String.Build("INSERT INTO MOBILE_CUSTOM_RESULT (COCODE,TXID,RESULTS) values ('{0}','{1}','{2}')",V.Caller.CompanyCode,V.Passed.DATA-TRANSID,V.Local.sStatusMsg,V.Local.sSQL)
+F.ODBC.Connection!conc.Execute(V.Local.sSQL)
+
+'Close Common DB connection
+F.ODBC.Connection!conc.Close
+
+Program.Sub.Main.End
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8286.22461$}$1
+${$6$}$jwithrow$}$20220929153315250$}$D95tSYIikIvF+oq+s87EtBQePACEH+EyDs2gPmW3WNpdz2+mDwXg/kGVSIIiYcimPwSbjSbiHZZ/7h7gshDKOg==
+Program.Sub.Comments.End
